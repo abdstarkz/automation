@@ -1,0 +1,701 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// USER & AUTHENTICATION
+// ============================================
+
+model User {
+  id            String   @id @default(uuid())
+  googleId      String?  @unique @map("google_id")
+  email         String   @unique
+  passwordHash  String?  @map("password_hash")
+  fullName      String?  @map("full_name")
+  avatarUrl     String?  @map("avatar_url")
+  isActive      Boolean  @default(true) @map("is_active")
+  emailVerified Boolean  @default(false) @map("email_verified")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  workflows              Workflow[]
+  workflowExecutions     WorkflowExecution[]
+  healthData             HealthData[]
+  healthInsights         HealthInsight[]
+  preferences            UserPreference?
+  apiCredentials         ApiCredential[]
+  progressItems          ProgressItem[]
+  notes                  Note[]
+  bookmarks              Bookmark[]
+  learningResources      LearningResource[]
+  studyPlans             StudyPlan[]
+  fitbitTokens           FitbitToken?
+  fitbitActivities       FitbitActivity[]
+  fitbitFoods            FitbitFood[]
+  personalTimeActivities PersonalTimeActivity[]
+  personalTimeGoals      PersonalTimeGoal[]
+  sessions               Session[]
+  healthAnalysisSessions HealthAnalysisSession[]
+  apiKeys                UserApiKey[]
+  integrations           Integration[]
+  webhooks               Webhook[]
+  healthGoals            HealthGoal[]  // FIX: Added missing relation
+
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  token     String   @unique
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token])
+  @@index([expiresAt])  // FIX: Added index for cleanup queries
+  @@map("sessions")
+}
+
+// ============================================
+// WORKFLOWS (Enhanced for Automation)
+// ============================================
+
+model Workflow {
+  id            String   @id @default(uuid())
+  userId        String   @map("user_id")
+  name          String
+  description   String?
+  workflowData  Json     @map("workflow_data")
+  n8nWorkflowId String?  @map("n8n_workflow_id")
+  isActive      Boolean  @default(true) @map("is_active")
+  isTemplate    Boolean  @default(false) @map("is_template")
+  category      String   @default("general")
+  tags          String[] @default([])
+  icon          String?
+  color         String?
+  status        String   @default("draft") // 'draft' | 'active' | 'archived'
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  user            User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  executions      WorkflowExecution[]
+  schedules       WorkflowSchedule[]
+  webhooks        Webhook[]
+
+  @@index([userId])
+  @@index([category])
+  @@index([isTemplate])
+  @@index([status])                  // FIX: Added status index
+  @@index([userId, status])          // FIX: Composite index for common query
+  @@map("workflows")
+}
+
+model WorkflowExecution {
+  id            String    @id @default(uuid())
+  workflowId    String    @map("workflow_id")
+  userId        String    @map("user_id")
+  status        String    @default("running")
+  startedAt     DateTime  @default(now()) @map("started_at")
+  completedAt   DateTime? @map("completed_at")
+  executionData Json      @default("{}") @map("execution_data")
+  errorMessage  String?   @map("error_message") @db.Text  // FIX: Changed to Text for long errors
+  loopState     Json?     @map("loop_state")
+
+  workflow Workflow         @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  user     User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  loopData WorkflowLoop[]
+  logs     ExecutionLog[]
+
+  @@index([userId])
+  @@index([workflowId])
+  @@index([status])
+  @@index([startedAt(sort: Desc)])                    // FIX: Sorted index for recent executions
+  @@index([userId, status, startedAt(sort: Desc)])    // FIX: Composite for dashboard
+  @@map("workflow_executions")
+}
+
+model ExecutionLog {
+  id          String   @id @default(uuid())
+  executionId String   @map("execution_id")
+  nodeId      String   @map("node_id")
+  timestamp   DateTime @default(now())
+  level       String
+  message     String   @db.Text  // FIX: Changed to Text
+  data        String?  @db.Text
+
+  execution WorkflowExecution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+
+  @@index([executionId])
+  @@index([timestamp(sort: Desc)])                   // FIX: Sorted for recent logs
+  @@index([executionId, timestamp(sort: Desc)])      // FIX: Composite
+  @@map("execution_logs")
+}
+
+model WorkflowLoop {
+  id             String   @id @default(uuid())
+  executionId    String   @map("execution_id")
+  iterationCount Int      @default(0) @map("iteration_count")
+  maxIterations  Int      @map("max_iterations")
+  currentState   Json     @map("current_state")
+  status         String   @default("running")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  execution WorkflowExecution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+
+  @@index([executionId])
+  @@index([status])  // FIX: Added status index
+  @@map("workflow_loops")
+}
+
+model WorkflowSchedule {
+  id             String    @id @default(uuid())
+  workflowId     String    @map("workflow_id")
+  cronExpression String    @map("cron_expression")
+  timezone       String    @default("UTC")
+  isActive       Boolean   @default(true) @map("is_active")
+  lastRun        DateTime? @map("last_run")
+  nextRun        DateTime? @map("next_run")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  workflow Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+
+  @@index([workflowId])
+  @@index([isActive])
+  @@index([nextRun])
+  @@index([isActive, nextRun])             // FIX: Composite for scheduler
+  @@map("workflow_schedules")
+}
+
+model Integration {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  type        String
+  name        String
+  credentials String   @db.Text
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, type, name])
+  @@index([userId])
+  @@index([type])
+  @@index([userId, isActive])  // FIX: For active integrations query
+  @@map("integrations")
+}
+
+model Webhook {
+  id         String   @id @default(uuid())
+  userId     String   @map("user_id")
+  workflowId String?  @map("workflow_id")
+  name       String
+  url        String   @unique
+  secret     String?
+  isActive   Boolean  @default(true) @map("is_active")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  user     User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workflow Workflow?        @relation(fields: [workflowId], references: [id], onDelete: SetNull)
+  requests WebhookRequest[]
+
+  @@index([userId])
+  @@index([url])
+  @@index([workflowId])
+  @@index([isActive])  // FIX: For active webhooks
+  @@map("webhooks")
+}
+
+model WebhookRequest {
+  id        String   @id @default(uuid())
+  webhookId String   @map("webhook_id")
+  method    String
+  headers   Json
+  body      Json?
+  query     Json?
+  status    String
+  response            Json?
+  workflowExecutionId String?  @map("workflow_execution_id")
+  error               String?  @db.Text
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  webhook Webhook @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+
+  @@index([webhookId])
+  @@index([createdAt(sort: Desc)])                  // FIX: Sorted for recent requests
+  @@index([webhookId, createdAt(sort: Desc)])       // FIX: Composite
+  @@map("webhook_requests")
+}
+
+// ============================================
+// HEALTH & FITNESS (FITBIT)
+// ============================================
+
+model FitbitToken {
+  id           String   @id @default(uuid())
+  userId       String   @unique @map("user_id")
+  accessToken  String   @map("access_token") @db.Text  // FIX: Tokens can be long
+  refreshToken String   @map("refresh_token") @db.Text // FIX: Tokens can be long
+  expiresAt    DateTime @map("expires_at")
+  scope        String[]
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])  // FIX: For token refresh job
+  @@map("fitbit_tokens")
+}
+
+model HealthData {
+  id         String   @id @default(uuid())
+  userId     String   @map("user_id")
+  dataType   String   @map("data_type")
+  value      Float
+  unit       String
+  recordedAt DateTime @default(now()) @map("recorded_at")
+  metadata   Json     @default("{}")
+  source     String   @default("fitbit")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, dataType, recordedAt])
+  @@index([userId, recordedAt(sort: Desc)])                // FIX: Sorted for time series
+  @@index([userId, dataType, recordedAt(sort: Desc)])      // FIX: Composite
+  @@map("health_data")
+}
+
+model FitbitActivity {
+  id           String   @id @default(uuid())
+  userId       String   @map("user_id")
+  activityName String   @map("activity_name")
+  calories     Float
+  duration     Int
+  distance     Float?
+  steps        Int?
+  startTime    DateTime @map("start_time")
+  activityId   String   @map("activity_id")
+  recordedAt   DateTime @map("recorded_at")
+  metadata     Json     @default("{}")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, activityId])
+  @@index([userId, recordedAt(sort: Desc)])  // FIX: Sorted
+  @@map("fitbit_activities")
+}
+
+model FitbitFood {
+  id           String   @id @default(uuid())
+  userId       String   @map("user_id")
+  foodName     String   @map("food_name")
+  mealType     String   @map("meal_type")
+  calories     Float
+  carbs        Float
+  fat          Float
+  protein      Float
+  loggedAt     DateTime @map("logged_at")
+  foodId       String   @map("food_id")
+  recordedDate DateTime @map("recorded_date")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, foodId])
+  @@index([userId, recordedDate(sort: Desc)])  // FIX: Sorted
+  @@map("fitbit_foods")
+}
+
+model PersonalTimeActivity {
+  id           String   @id @default(uuid())
+  userId       String   @map("user_id")
+  activityType String   @map("activity_type")
+  duration     Int
+  date         DateTime
+  notes        String?  @db.Text  // FIX: Changed to Text
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, date(sort: Desc)])                            // FIX: Sorted
+  @@index([userId, activityType, date(sort: Desc)])              // FIX: Composite
+  @@map("personal_time_activities")
+}
+
+model PersonalTimeGoal {
+  id           String   @id @default(uuid())
+  userId       String   @map("user_id")
+  activityType String   @map("activity_type")
+  weeklyGoal   Int      @map("weekly_goal")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, activityType])
+  @@index([userId, isActive])  // FIX: For active goals
+  @@map("personal_time_goals")
+}
+
+model HealthInsight {
+  id             String   @id @default(uuid())
+  userId         String   @map("user_id")
+  insightType    String   @map("insight_type")
+  title          String
+  description    String?  @db.Text                           // FIX: Changed to Text
+  aiAnalysis     String?  @map("ai_analysis") @db.Text        // FIX: Changed to Text
+  relatedMetrics Json     @default("{}") @map("related_metrics")
+  severity       String   @default("info")
+  isRead         Boolean  @default(false) @map("is_read")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([userId, isRead])                                  // FIX: For unread insights
+  @@index([userId, isRead, createdAt(sort: Desc)])           // FIX: Composite
+  @@map("health_insights")
+}
+
+model HealthGoal {
+  id          String    @id @default(uuid())
+  userId      String    @map("user_id")
+  goalType    String    @map("goal_type")
+  targetValue Float     @map("target_value")
+  unit        String
+  frequency   String    @default("daily")
+  isActive    Boolean   @default(true) @map("is_active")
+  startDate   DateTime  @default(now()) @map("start_date")
+  endDate     DateTime? @map("end_date")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)  // FIX: Added relation
+
+  @@index([userId, isActive])
+  @@index([userId, goalType, isActive])  // FIX: Composite
+  @@map("health_goals")
+}
+
+// ============================================
+// PROGRESS TRACKING & LEARNING
+// ============================================
+
+model ProgressItem {
+  id              String    @id @default(uuid())
+  userId          String    @map("user_id")
+  title           String
+  description     String?   @db.Text  // FIX: Changed to Text
+  type            String    @default("skill")
+  goalHours       Float?    @map("goal_hours")
+  spentHours      Float     @default(0) @map("spent_hours")
+  streakCount     Int       @default(0) @map("streak_count")
+  lastPracticedAt DateTime? @map("last_practiced_at")
+  status          String    @default("active")
+  priority        String    @default("medium")
+  tags            String[]  @default([])
+  color           String?
+  icon            String?
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  timeEntries TimeEntry[]
+  studyPlans  StudyPlan[]
+
+  @@index([userId, status])
+  @@index([lastPracticedAt(sort: Desc)])                          // FIX: Sorted
+  @@index([userId, status, lastPracticedAt(sort: Desc)])          // FIX: Composite
+  @@map("progress_items")
+}
+
+model TimeEntry {
+  id              String    @id @default(uuid())
+  progressItemId  String    @map("progress_item_id")
+  startedAt       DateTime  @default(now()) @map("started_at")
+  endedAt         DateTime? @map("ended_at")
+  durationMinutes Int?      @map("duration_minutes")
+  notes           String?   @db.Text  // FIX: Changed to Text
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  progressItem ProgressItem @relation(fields: [progressItemId], references: [id], onDelete: Cascade)
+
+  @@index([progressItemId])
+  @@index([startedAt(sort: Desc)])                               // FIX: Sorted
+  @@index([progressItemId, startedAt(sort: Desc)])               // FIX: Composite
+  @@map("time_entries")
+}
+
+model StudyPlan {
+  id             String    @id @default(uuid())
+  userId         String    @map("user_id")
+  progressItemId String?   @map("progress_item_id")
+  title          String
+  description    String?   @db.Text  // FIX: Changed to Text
+  schedule       Json      @default("{}")
+  aiGenerated    Boolean   @default(false) @map("ai_generated")
+  startDate      DateTime  @default(now()) @map("start_date")
+  endDate        DateTime? @map("end_date")
+  isActive       Boolean   @default(true) @map("is_active")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  progressItem ProgressItem?      @relation(fields: [progressItemId], references: [id], onDelete: SetNull)
+  resources    LearningResource[]
+
+  @@index([userId, isActive])
+  @@index([userId, isActive, startDate(sort: Desc)])  // FIX: Composite
+  @@map("study_plans")
+}
+
+model LearningResource {
+  id            String   @id @default(uuid())
+  userId        String   @map("user_id")
+  studyPlanId   String?  @map("study_plan_id")
+  title         String
+  url           String?
+  source        String   @default("manual")
+  perplexityId  String?  @map("perplexity_id")
+  summary       String?  @db.Text  // FIX: Changed to Text
+  resourceType  String   @default("article")
+  estimatedTime Int?     @map("estimated_time")
+  isCompleted   Boolean  @default(false) @map("is_completed")
+  tags          String[] @default([])
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  studyPlan StudyPlan? @relation(fields: [studyPlanId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([studyPlanId])
+  @@index([userId, isCompleted])  // FIX: For completed/pending filter
+  @@map("learning_resources")
+}
+
+// ============================================
+// NOTES & BOOKMARKS (PERSONAL SPACE)
+// ============================================
+
+model Note {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  title       String
+  content     String   @default("") @db.Text  // FIX: Changed to Text
+  noteType    String   @default("text") @map("note_type")
+  folderId    String?  @map("folder_id")
+  attachments Json     @default("[]")
+  tags        String[] @default([])
+  isPinned    Boolean  @default(false) @map("is_pinned")
+  color       String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user   User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  folder NoteFolder? @relation(fields: [folderId], references: [id], onDelete: SetNull)
+
+  @@index([userId, folderId])
+  @@index([isPinned])
+  @@index([userId, isPinned, updatedAt(sort: Desc)])  // FIX: Composite
+  @@map("notes")
+}
+
+model NoteFolder {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  name      String
+  color     String?
+  icon      String?
+  parentId  String?  @map("parent_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  notes    Note[]
+  parent   NoteFolder?  @relation("FolderHierarchy", fields: [parentId], references: [id], onDelete: Cascade)
+  children NoteFolder[] @relation("FolderHierarchy")
+
+  @@index([userId])
+  @@index([parentId])
+  @@index([userId, parentId])  // FIX: Composite
+  @@map("note_folders")
+}
+
+model Bookmark {
+  id           String   @id @default(uuid())
+  userId       String   @map("user_id")
+  url          String   @db.Text  // FIX: URLs can be long
+  title        String
+  description  String?  @db.Text  // FIX: Changed to Text
+  previewImage String?  @map("preview_image")
+  folderId     String?  @map("folder_id")
+  tags         String[] @default([])
+  isFavorite   Boolean  @default(false) @map("is_favorite")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  user   User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  folder BookmarkFolder? @relation(fields: [folderId], references: [id], onDelete: SetNull)
+
+  @@index([userId, folderId])
+  @@index([isFavorite])
+  @@index([userId, isFavorite, updatedAt(sort: Desc)])  // FIX: Composite
+  @@map("bookmarks")
+}
+
+model BookmarkFolder {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  name      String
+  color     String?
+  icon      String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  bookmarks Bookmark[]
+
+  @@index([userId])
+  @@map("bookmark_folders")
+}
+
+// ============================================
+// SETTINGS & PREFERENCES
+// ============================================
+
+model UserPreference {
+  id                   String   @id @default(uuid())
+  userId               String   @unique @map("user_id")
+  healthGoals          Json     @default("{}") @map("health_goals")
+  notificationSettings Json     @default("{}") @map("notification_settings")
+  uiPreferences        Json     @default("{}") @map("ui_preferences")
+  theme                String   @default("light")
+  language             String   @default("en")
+  timezone             String   @default("UTC")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_preferences")
+}
+
+model ApiCredential {
+  id              String   @id @default(uuid())
+  userId          String   @map("user_id")
+  serviceName     String   @map("service_name")
+  credentialsData String   @map("credentials_data") @db.Text  // FIX: Changed to Text
+  isActive        Boolean  @default(true) @map("is_active")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, serviceName])
+  @@index([userId])
+  @@index([userId, isActive])  // FIX: For active credentials
+  @@map("api_credentials")
+}
+
+// ============================================
+// SYSTEM & ANALYTICS
+// ============================================
+
+model SystemLog {
+  id        String   @id @default(uuid())
+  level     String   @default("info")
+  service   String
+  message   String   @db.Text  // FIX: Changed to Text
+  metadata  Json     @default("{}")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([level, createdAt(sort: Desc)])      // FIX: Sorted
+  @@index([service, createdAt(sort: Desc)])    // FIX: Composite
+  @@map("system_logs")
+}
+
+model UsageAnalytics {
+  id        String   @id @default(uuid())
+  userId    String?  @map("user_id")
+  eventType String   @map("event_type")
+  eventData Json     @default("{}") @map("event_data")
+  ipAddress String?  @map("ip_address")
+  userAgent String?  @map("user_agent") @db.Text  // FIX: User agents can be long
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId, eventType, createdAt(sort: Desc)])  // FIX: Sorted
+  @@index([createdAt(sort: Desc)])                     // FIX: For analytics queries
+  @@map("usage_analytics")
+}
+
+// ============================================
+// AI HEALTH ANALYSIS
+// ============================================
+
+model HealthAnalysisSession {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  title       String   @default("Health Analysis")
+  dateRange   String   @map("date_range")
+  startDate   DateTime @map("start_date")
+  endDate     DateTime @map("end_date")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user     User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages HealthAnalysisMessage[]
+
+  @@index([userId, createdAt(sort: Desc)])  // FIX: Sorted
+  @@map("health_analysis_sessions")
+}
+
+model HealthAnalysisMessage {
+  id        String   @id @default(uuid())
+  sessionId String   @map("session_id")
+  role      String
+  content   String   @db.Text
+  metadata  Json     @default("{}")
+  mediaUrls String[] @default([]) @map("media_urls")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  session HealthAnalysisSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt(sort: Asc)])  // FIX: Ascending for chat order
+  @@map("health_analysis_messages")
+}
+
+// ============================================
+// USER API KEYS
+// ============================================
+
+model UserApiKey {
+  id           String    @id @default(uuid())
+  userId       String    @map("user_id")
+  service      String    // e.g. "gemini", "openai"
+  encryptedKey String    @map("encrypted_key") @db.Text // Encrypted API key
+  isActive     Boolean   @default(true) @map("is_active")
+  lastUsedAt   DateTime? @map("last_used_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, service])
+  @@index([userId])
+  @@index([userId, isActive])  // FIX: For active keys
+  @@map("user_api_keys")
+}
